@@ -9,8 +9,9 @@
 #define LIGHT_VAL 2
 #define TWO_PI 6.28318530718f
 #define MAX_STEP 64
-#define MAX_DIST 2.0f
+#define MAX_DIST 5.0f
 #define IM_SIZE 512
+#define SAMPLE_NUM 1024
 
 using namespace std;
 
@@ -30,7 +31,14 @@ void write_image(ofstream& stream, int width, int height, unsigned char* data){
 struct result{
 	float sdf;
 	float emissive;
+	float reflectivity;
 };
+
+float reflect(float ix, float iy, float nx, float ny, float* rx, float* ry){
+	float idotn2 = (ix*nx + iy*ny)*2.0f;
+	*rx = ix - idotn2*nx;
+	*ry = iy - idotn2*ny;
+}
 
 float circleSdf(float x, float y, float ox, float oy, float radius){
 	float ux = x-ox, uy = y-oy;
@@ -120,16 +128,10 @@ result scene(float x, float y){
 	// return r;
 	// result r = {roundedTriangleSdf(x,y,0.5f,0.2f,0.8f,0.8f,0.3f,0.6f,0.1f), 1.0f};
 	// return r;
-	// result a = {circleSdf(x,y,0.4f,0.2f,0.1f),2.0f};
-	// result b = {boxSdf(x,y,0.5f,0.8f,TWO_PI/16.0f,0.1f,0.1f), 0.0f};
-	// result c = {boxSdf(x,y,0.8f,0.5f,TWO_PI/16.0f,0.1f,0.1f), 0.0f};
-	// return unionOp(unionOp(a, b), c);
-	float a_x=0.4f,a_y=0.5f,b_x=0.45f,b_y=0.5f,c_x=0.6f,c_y=0.5f,d_x=0.55f,d_y=0.5f;
-	result a = {roundedBoxSdf(x,y,0.3,0.5,TWO_PI/4.0f,sqrtf(0.12)/2,0.005f, 0.02f), 1.0f};
-	result b = {roundedBoxSdf(x,y,0.4,0.5,TWO_PI/360.0f*60.0f,0.2f,0.005f,0.02f), 1.0f};
-	result c = {roundedBoxSdf(x,y,0.6,0.5,TWO_PI/360.0f*-60.0f,0.2f,0.005f, 0.02f), 1.0f};
-	result d = {roundedBoxSdf(x,y,0.7,0.5,TWO_PI/4.0f,sqrtf(0.12)/2,0.005f,0.02f), 1.0f};
-	return unionOp(unionOp(unionOp(a,b), c), d);
+	result a = {circleSdf(x,y,0.4f,0.2f,0.1f),2.0f, 0.0f};
+	result b = {boxSdf(x,y,0.5f,0.8f,TWO_PI/16.0f,0.1f,0.1f), 0.0f, 0.9f};
+	result c = {boxSdf(x,y,0.8f,0.5f,TWO_PI/16.0f,0.1f,0.1f), 0.0f, 0.9f};
+	return unionOp(unionOp(a, b), c);
 }
 
 void gradient(float x, float y, float* nx, float* ny){
@@ -137,13 +139,25 @@ void gradient(float x, float y, float* nx, float* ny){
 	*ny = (scene(x, y + EPISLON).sdf - scene(x, y - EPISLON).sdf)*(0.5f/EPISLON);
 }
 
-float light(float x, float y, float dx, float dy){
+#define BIAS 1e-4f
+#define MAX_DEPTH 10
+
+float trace(float x, float y, float dx, float dy, int depth){
 	int step_num=0;
 	float dist=0.001f;
-	while(step_num<MAX_STEP&&dist<MAX_DIST){
-		result d = scene(x+dist*dx, y+dist*dy);
-		if(d.sdf<EPISLON)
-			return d.emissive;
+	while(step_num<MAX_STEP && dist<MAX_DIST){
+		float move_x = x+dist*dx, move_y = y+dist*dy;
+		result d = scene(move_x, move_y);
+		if(d.sdf<EPISLON){
+			float sum = d.emissive;
+			if (depth < MAX_DEPTH && d.reflectivity > 0.0f){
+				float nx, ny, rx, ry;
+				gradient(move_x, move_y, &nx, &ny);
+				reflect(dx, dy, nx, ny, &rx, &ry);
+				sum += d.reflectivity * trace(move_x+nx*BIAS, move_y+ny*BIAS, rx, ry, depth+1);
+			}
+			return sum;
+		}
 		dist += d.sdf;
 		++step_num;
 	}
@@ -152,14 +166,13 @@ float light(float x, float y, float dx, float dy){
 
 float traversal(float x, float y){
 	float all = 0;
-	int sample_num = 1024;
-	for(int i=0; i<sample_num; ++i){
+	for(int i=0; i<SAMPLE_NUM; ++i){
 		// float angle = TWO_PI*rand()/RAND_MAX;
 		// float angle = TWO_PI*i/sample_num;
-		float angle = TWO_PI * (i + (float)rand() / RAND_MAX) / sample_num;
-		all += light(x, y, cosf(angle), sinf(angle));
+		float angle = TWO_PI * (i + (float)rand() / RAND_MAX) / SAMPLE_NUM;
+		all += trace(x, y, cosf(angle), sinf(angle), 0);
 	}
-	return all/sample_num;
+	return all/SAMPLE_NUM;
 }
 
 
@@ -193,7 +206,7 @@ int main(){
 	// 	}
 	// }
 	draw_light(data, IM_SIZE, IM_SIZE);
-	out.open("test_M.ppm", ios::out|ios::binary);
+	out.open("test_reflect.ppm", ios::out|ios::binary);
 	write_image(out, IM_SIZE, IM_SIZE, data);
 	out.close();
 	return 0;
